@@ -14,7 +14,6 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	raven "github.com/getsentry/raven-go"
-	"github.com/google/uuid"
 )
 
 type Config struct {
@@ -27,53 +26,61 @@ type Config struct {
 }
 
 type Simplisafe struct {
-	client     *http.Client
-	deviceUUID string
-	userID     string
-	locations  *LocationsResponse
+	client          *http.Client
+	userID          int
+	accessToken     string
+	refreshToken    string
+	tokenExpiration time.Time
+	locations       *LocationsResponse
 }
 
 func New() *Simplisafe {
-	deviceUUID := uuid.New().String()
 	cjar, _ := cookiejar.New(nil)
 	client := &http.Client{
 		Jar: cjar,
 	}
 
 	return &Simplisafe{
-		client:     client,
-		deviceUUID: deviceUUID,
+		client: client,
 	}
 }
 
-func (s *Simplisafe) MustGetUserID() string {
-	if s.userID == "" {
+func (s *Simplisafe) MustGetUserID() int {
+	if s.userID == 0 {
 		panic("Not loggged in")
 	}
 
 	return s.userID
 }
 
-func (s *Simplisafe) MustGetLocation() string {
+func (s *Simplisafe) MustGetLocation() int {
 	if s.locations == nil {
 		panic("GetStatus not called yet, or no location in Simplisafe account")
 	}
 
-	for loc := range s.locations.Locations {
-		return loc
+	for _, sub := range s.locations.Subscriptions {
+		return sub.SID
 	}
 
 	panic("No location in Simplisafe account")
 }
 
 func (s *Simplisafe) Login(username, password string) error {
-	resp, postErr := s.client.PostForm("https://simplisafe.com/mobile/login", url.Values{
-		"name":        {username},
-		"pass":        {password},
-		"version":     {"1200"},
-		"device_uuid": {s.deviceUUID},
-		"device_name": {"Go API"},
-	})
+	reqBody := strings.NewReader(url.Values{
+		"username":   {username},
+		"password":   {password},
+		"device_id":  {"SimpliMQTT"},
+		"grant_type": {"password"},
+	}.Encode())
+
+	req, err := http.NewRequest("POST", "https://api.simplisafe.com/v1/api/token", reqBody)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Authorization", "Basic NGRmNTU2MjctNDZiMi00ZTJjLTg2NmItMTUyMWIzOTVkZWQyLjEtMC0wLldlYkFwcC5zaW1wbGlzYWZlLmNvbTo=")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, postErr := s.client.Do(req)
 	defer resp.Body.Close()
 	if postErr != nil {
 		return postErr
@@ -88,16 +95,48 @@ func (s *Simplisafe) Login(username, password string) error {
 	if decodeErr != nil {
 		return decodeErr
 	}
-	s.userID = loginResp.UID
-	_, _ = s.GetStatus()
+	s.accessToken = loginResp.AccessToken
+	s.refreshToken = loginResp.RefreshToken
+	s.tokenExpiration = time.Now().Add(time.Duration(loginResp.ExpiresIn) * time.Second)
+	return s.GetUserInfo()
+}
+
+type AuthCheckResponse struct {
+	UserID int `json:"userId"`
+	// IsAdmin bool `json:"isAdmin"`
+}
+
+func (s *Simplisafe) GetUserInfo() error {
+	reqBody := strings.NewReader(url.Values{}.Encode())
+
+	req, _ := http.NewRequest("GET", "https://api.simplisafe.com/v1/api/authCheck", reqBody)
+	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", s.accessToken))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, postErr := s.client.Do(req)
+	defer resp.Body.Close()
+	if postErr != nil {
+		return postErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Wrong status code %d while listing locations", resp.StatusCode)
+	}
+	decoder := json.NewDecoder(resp.Body)
+	var authCheckResp AuthCheckResponse
+	decodeErr := decoder.Decode(&authCheckResp)
+	if decodeErr != nil {
+		return decodeErr
+	}
+	s.userID = authCheckResp.UserID
 	return nil
 }
 
 func (s *Simplisafe) GetStatus() (string, error) {
-	resp, postErr := s.client.PostForm(fmt.Sprintf("https://simplisafe.com/mobile/%s/locations", s.MustGetUserID()), url.Values{
-		"no_persist":           {"1"},
-		"XDEBUG_SESSION_START": {"session_name"},
-	})
+	reqBody := strings.NewReader(url.Values{}.Encode())
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.simplisafe.com/v1/users/%d/subscriptions?activeOnly=false", s.MustGetUserID()), reqBody)
+	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", s.accessToken))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, postErr := s.client.Do(req)
 	defer resp.Body.Close()
 	if postErr != nil {
 		return "", postErr
@@ -128,57 +167,41 @@ func translateMQTTStatus(mqttStatus string) string {
 	panic(fmt.Sprintf("Unknown status %s", mqttStatus))
 }
 
-func (s *Simplisafe) SetStatus(status string) error {
-	tStatus := translateMQTTStatus(status)
-	if tStatus == s.locations.GetSingleStatus() {
-		log.Println("No status change required")
-		return nil
-	}
-	resp, postErr := s.client.PostForm(fmt.Sprintf("https://simplisafe.com/mobile/%s/sid/%s/set-state", s.MustGetUserID(), s.MustGetLocation()), url.Values{
-		"state":                {tStatus},
-		"mobile":               {"1"},
-		"no_persist":           {"1"},
-		"XDEBUG_SESSION_START": {"session_name"},
-	})
-	if postErr != nil {
-		return postErr
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Wrong status code %d while setting status", resp.StatusCode)
-	}
-	return nil
-}
-
 type LoginResponse struct {
-	ReturnCode int    `json:"return_code"`
-	Session    string `json:"session"`
-	UID        string `json:"uid"`
-	Username   string `json:'username"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	// Scopes []int `json:"scopes"`
+	// TokenType string `json:"token_type"`
 }
 
 type LocationsResponse struct {
-	NumLocations int `json:"num_locations"`
-	Locations    map[string]struct {
-		Street1     string `json:"street1"`
-		Street2     string `json:"street2"`
-		City        string `json:"city"`
-		State       string `json:"state"`
-		PostalCode  string `json:"postal_code"`
-		StatusCode  int    `json:"s_status,string"`
-		SystemState string `json:"system_state"`
-	} `json:"locations"`
+	Subscriptions []struct {
+		SID      int `json:"sid"`
+		UID      int `json:"uid"`
+		Location struct {
+			Street1 string `json:"street1"`
+			Street2 string `json:"street2"`
+			City    string `json:"city"`
+			State   string `json:"state"`
+			Zip     string `json:"zip"`
+			System  struct {
+				AlarmState          string `json:"alarmState"`
+				AlarmStateTimestamp uint64 `json:"alarmStateTimestamp"`
+				StateUpdated        uint64 `json:"stateUpdated"`
+			} `json:"system"`
+		} `json:"location"`
+	} `json:"subscriptions"`
 }
 
 func (l LocationsResponse) GetSingleStatus() string {
-	for _, value := range l.Locations {
-		switch value.SystemState {
-		case "Off":
+	for _, sub := range l.Subscriptions {
+		switch sub.Location.System.AlarmState {
+		case "OFF":
 			return "disarmed"
-		case "Home":
+		case "HOME":
 			return "armed_home"
-		case "Away":
+		case "AWAY_COUNT", "AWAY":
 			return "armed_away"
 		default:
 			return ""
@@ -202,6 +225,8 @@ func readConfig(path string) (*Config, error) {
 }
 
 func main() {
+	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
+
 	configFile := flag.String("config", "/config/config.json", "Config file (containing login credentials)")
 	flag.Parse()
 
@@ -228,13 +253,16 @@ func main() {
 		log.Fatal(loginErr)
 	}
 
-	mqttClient.Subscribe(config.MQTTCommandTopic, byte(2), func(client mqtt.Client, msg mqtt.Message) {
-		fmt.Printf("* [%s] %s\n", msg.Topic(), string(msg.Payload()))
-		setStatusErr := simplisafe.SetStatus(string(msg.Payload()))
-		if setStatusErr != nil {
-			raven.CaptureErrorAndWait(setStatusErr, nil)
-		}
-	})
+	/*
+		// Disable setting alarm state via MQTT.
+		mqttClient.Subscribe(config.MQTTCommandTopic, byte(2), func(client mqtt.Client, msg mqtt.Message) {
+			fmt.Printf("* [%s] %s\n", msg.Topic(), string(msg.Payload()))
+			setStatusErr := simplisafe.SetStatus(string(msg.Payload()))
+			if setStatusErr != nil {
+				raven.CaptureErrorAndWait(setStatusErr, nil)
+			}
+		})
+	*/
 
 	for {
 		status, sErr := simplisafe.GetStatus()
@@ -250,6 +278,6 @@ func main() {
 			status,
 		).Wait()
 
-		time.Sleep(15 * time.Second)
+		time.Sleep(10 * time.Second)
 	}
 }
