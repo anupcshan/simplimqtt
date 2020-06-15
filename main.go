@@ -253,17 +253,6 @@ func main() {
 		log.Fatal(loginErr)
 	}
 
-	/*
-		// Disable setting alarm state via MQTT.
-		mqttClient.Subscribe(config.MQTTCommandTopic, byte(2), func(client mqtt.Client, msg mqtt.Message) {
-			fmt.Printf("* [%s] %s\n", msg.Topic(), string(msg.Payload()))
-			setStatusErr := simplisafe.SetStatus(string(msg.Payload()))
-			if setStatusErr != nil {
-				raven.CaptureErrorAndWait(setStatusErr, nil)
-			}
-		})
-	*/
-
 	for {
 		status, sErr := simplisafe.GetStatus()
 		if sErr != nil {
