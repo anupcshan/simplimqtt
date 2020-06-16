@@ -81,10 +81,11 @@ func (s *Simplisafe) Login(username, password string) error {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, postErr := s.client.Do(req)
-	defer resp.Body.Close()
 	if postErr != nil {
 		return postErr
 	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Wrong status code %d while logging in", resp.StatusCode)
 	}
@@ -113,10 +114,11 @@ func (s *Simplisafe) GetUserInfo() error {
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", s.accessToken))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, postErr := s.client.Do(req)
-	defer resp.Body.Close()
 	if postErr != nil {
 		return postErr
 	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Wrong status code %d while listing locations", resp.StatusCode)
 	}
@@ -137,10 +139,11 @@ func (s *Simplisafe) GetStatus() (string, error) {
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", s.accessToken))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, postErr := s.client.Do(req)
-	defer resp.Body.Close()
 	if postErr != nil {
 		return "", postErr
 	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("Wrong status code %d while listing locations", resp.StatusCode)
 	}
