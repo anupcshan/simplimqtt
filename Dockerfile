@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.13.6 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.14.4 AS builder
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
