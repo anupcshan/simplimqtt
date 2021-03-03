@@ -2,9 +2,8 @@ name: build-docker-image
 
 on:
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+    tags:
+      - "v*.*.*"
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -15,6 +14,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+      # From https://github.com/metcalfc/docker-action-examples/blob/main/.github/workflows/main-ci.yml
+      - name: Prepare
+        id: prep
+        run: |
+          DOCKER_IMAGE=ghcr.io/anupcshan/simplimqtt
+          VERSION=${GITHUB_REF#refs/tags/v}
+          TAGS="${DOCKER_IMAGE}:${VERSION}"
+          echo ::set-output name=tags::${TAGS}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
@@ -37,4 +44,4 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm/v7,linux/arm64
           push: true
-          tags: ghcr.io/anupcshan/simplimqtt:0.0.5
+          tags: ${{ steps.prep.outputs.tags }}
