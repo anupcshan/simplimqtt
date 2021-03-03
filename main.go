@@ -170,6 +170,28 @@ func translateMQTTStatus(mqttStatus string) string {
 	panic(fmt.Sprintf("Unknown status %s", mqttStatus))
 }
 
+func (s *Simplisafe) SetStatus(status string) error {
+	tStatus := translateMQTTStatus(status)
+	if tStatus == s.locations.GetSingleStatus() {
+		log.Println("No status change required")
+		return nil
+	}
+
+	reqBody := strings.NewReader(url.Values{}.Encode())
+	req, _ := http.NewRequest("POST", fmt.Sprintf("https://api.simplisafe.com/v1/ss3/subscriptions/%d/state/%s", s.MustGetLocation(), tStatus), reqBody)
+	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", s.accessToken))
+	resp, postErr := s.client.Do(req)
+	if postErr != nil {
+		return postErr
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Wrong status code %d while setting status", resp.StatusCode)
+	}
+	return nil
+}
+
 type LoginResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -254,6 +276,18 @@ func main() {
 	if loginErr := simplisafe.Login(config.Username, config.Password); loginErr != nil {
 		raven.CaptureErrorAndWait(loginErr, nil)
 		log.Fatal(loginErr)
+	}
+
+	if config.MQTTCommandTopic != "" {
+		log.Printf("Subscribing to %s", config.MQTTCommandTopic)
+
+		mqttClient.Subscribe(config.MQTTCommandTopic, byte(2), func(client mqtt.Client, msg mqtt.Message) {
+			log.Printf("Received [%s] %s\n", msg.Topic(), string(msg.Payload()))
+			setStatusErr := simplisafe.SetStatus(string(msg.Payload()))
+			if setStatusErr != nil {
+				raven.CaptureErrorAndWait(setStatusErr, nil)
+			}
+		})
 	}
 
 	for {
